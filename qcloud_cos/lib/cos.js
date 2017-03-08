@@ -147,6 +147,63 @@ function upload(filePath, bucket, dstpath, bizattr, insertOnly, callback) {
 	}
 }
 
+function put(fileBuffer, bucket, dstpath, bizattr, insertOnly, callback) {
+	if (typeof bizattr === 'function') {
+		callback = bizattr;
+		bizattr = null;
+	}else if(typeof insertOnly === 'function'){
+		callback = insertOnly;
+		insertOnly = undefined;
+	} else {
+		callback = callback || function(ret){ console.log(ret); };
+	}
+
+	if (typeof callback === 'function' && fileBuffer instanceof Buffer) {
+
+		bucket = bucket.strip();
+		dstpath  = fixPath(dstpath);
+		var expired = parseInt(Date.now() / 1000) + conf.EXPIRED_SECONDS;
+		var sign  = auth.signMore(bucket, expired);
+		var url = generateResUrl(bucket, dstpath);
+		var urlInfo = urlM.parse(url);
+
+		var sha = crypto.createHash('sha1');
+		sha.update(fileBuffer);
+
+		var form = formstream()
+			.field('op', 'upload')
+			.field('sha', sha.digest('hex'));
+
+		// TODO: formsteam.buffer 可以编辑 buffer
+		form.buffer('filecontent', fileBuffer, dstpath);
+
+		if (bizattr) {
+			form.field('biz_attr', bizattr.toString());
+		}
+		if(insertOnly!==undefined){
+			form.field('insertOnly', insertOnly);
+		}
+
+		var headers = form.headers();
+		headers['Authorization'] = sign;
+		headers['User-Agent'] = conf.USER_AGENT();
+		var options = {
+			protocol: urlInfo.protocol,
+			hostname: urlInfo.hostname,
+			port: urlInfo.port,
+			path: urlInfo.path,
+			method: 'POST',
+			headers: headers
+		};
+		
+		var req = buildRequest(options, callback);
+		req && form.pipe(req);
+	} else {
+		// error, file not exists
+		callback({'code':COS_PARAMS_ERROR, 'message':'file '+filePath+' not exists or params error', 'data':{}});
+	}
+}
+
 /**
  * 分片上传获取size
  * @param  {int}   size     文件分片大小,Bytes
@@ -915,3 +972,4 @@ exports.list = list;
 exports.prefixSearch = prefixSearch;
 exports.createFolder = createFolder;
 exports.moveFile = moveFile;
+exports.put = put;
