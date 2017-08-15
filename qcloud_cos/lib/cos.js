@@ -6,6 +6,8 @@ var crypto = require('crypto');
 var formstream = require('formstream');
 var auth = require('./auth');
 var conf = require('./conf');
+var stream = require('stream');
+var tee = require('tee');
 
 var COS_PARAMS_ERROR = -1;
 var COS_NETWORK_ERROR = -2;
@@ -29,8 +31,9 @@ function buildRequest(options, callback) {
 	}
 	var req = net.request(options,
 		function (res) {
+			// console.log(res);
 			var body = "";
-			res.on('data', function (data) { body += data; })
+			res.on('data', function (data) { body += data; console.log('res, get!', data); })
 			   .on('end', function () {
 				try {
 					var ret = JSON.parse(body.toString());
@@ -47,9 +50,7 @@ function buildRequest(options, callback) {
 					if (0 == ret.code && ret.hasOwnProperty('data')) {
 						result.data = ret.data;
 					}
-
 					callback(result);
-
 				} else {
 					callback({'code':COS_NETWORK_ERROR, 'message':'response '+body.toString()+' is not json', 'data':{}});
 				}
@@ -61,6 +62,10 @@ function buildRequest(options, callback) {
 		req.end();
 		callback({'code':COS_NETWORK_ERROR, 'message':'recv timeout', 'data':{}});
 	});
+	req.on('data', function(data) {
+		console.log(data);
+	})
+	// console.log(req, 'request');
 	return req;
 }
 
@@ -139,6 +144,7 @@ function upload(filePath, bucket, dstpath, bizattr, insertOnly, callback) {
 
 				var req = buildRequest(options, callback);
 				req && form.pipe(req);
+				console.log(req)
 		});
 
 	} else {
@@ -200,7 +206,87 @@ function put(fileBuffer, bucket, dstpath, bizattr, insertOnly, callback) {
 		req && form.pipe(req);
 	} else {
 		// error, file not exists
-		callback({'code':COS_PARAMS_ERROR, 'message':'file '+filePath+' not exists or params error', 'data':{}});
+		callback({'code':COS_PARAMS_ERROR, 'message':'file '+dstpath+' not exists or params error', 'data':{}});
+	}
+}
+
+/**
+ * 上传 Stream
+ * @param  {string}   filePath     文件本地路径，必须
+ * @param  {string}   bucket       bucket名称，必须
+ * @param  {string}   dstpath      文件存储的路径和名称，必须
+ * @param  {string}   bizattr      文件的属性，可选
+ * @param  {int}      insertOnly   是否允许覆盖文件，0表示允许，1表示不允许，可选
+ * @param  {Function} callback     用户上传完毕后执行的回调函数，可选，默认输出日志 格式为 function (ret) {}
+ *                                 入参为ret：{'code':0,'message':'ok','data':{...}}
+ */
+function upload_stream(upStream, bucket, dstpath, bizattr, insertOnly, callback) {
+
+	if (typeof bizattr === 'function') {
+		callback = bizattr;
+		bizattr = null;
+	} else if(typeof insertOnly === 'function'){
+		callback = insertOnly;
+		insertOnly = undefined;
+	} else {
+		callback = callback || function(ret){ console.log(ret); };
+	}
+
+	if (typeof callback === 'function' && typeof upStream.pipe === 'function') {
+
+		bucket = bucket.strip();
+		dstpath  = fixPath(dstpath);
+		var expired = parseInt(Date.now() / 1000) + conf.EXPIRED_SECONDS;
+		var sign  = auth.signMore(bucket, expired);
+		var url = generateResUrl(bucket, dstpath);
+		var urlInfo = urlM.parse(url);
+
+		var sha = crypto.createHash('sha1');
+
+		var fsRs = new stream.PassThrough
+		var filecontent = new stream.PassThrough
+		upStream.pipe(tee(fsRs, filecontent));
+		var form = formstream().stream('filecontent', filecontent, dstpath);
+		var fileLength = 0;
+
+		fsRs.on('data', function(d) { sha.update(d); });
+		fsRs.on('end', function() {
+					var hash = sha.digest('hex');
+					form = form
+						.field('op', 'upload')
+						.field('sha', hash);
+				if (bizattr) {
+					form.field('biz_attr', bizattr.toString());
+				}
+				if(insertOnly!==undefined){
+					form.field('insertOnly', insertOnly);
+				}
+				
+				var headers = form.headers();
+				headers['Content-Length'] = fileLength.toString();
+				headers['Authorization'] = sign;
+				headers['User-Agent'] = conf.USER_AGENT();
+
+				var options = {
+					protocol: urlInfo.protocol,
+					hostname: urlInfo.hostname,
+					port: urlInfo.port,
+					path: urlInfo.path,
+					method: 'POST',
+					headers: headers
+				};
+
+				var req = buildRequest(options, callback);
+				req && form.pipe(req);
+		});
+
+		filecontent.on('end', function() {
+			console.log('file input success')
+		})
+
+	} else {
+		// error, file not exists
+		callback({'code':COS_PARAMS_ERROR, 'message':'file '+dstpath+' not exists or params error', 'data':{}});
 	}
 }
 
@@ -973,3 +1059,4 @@ exports.prefixSearch = prefixSearch;
 exports.createFolder = createFolder;
 exports.moveFile = moveFile;
 exports.put = put;
+exports.upload_stream = upload_stream;

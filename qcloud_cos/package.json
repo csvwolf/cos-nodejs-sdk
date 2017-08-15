@@ -23,6 +23,7 @@
     "node >= 0.4.7"
   ],
   "dependencies": {
-    "formstream": "0.0.7"
+    "formstream": "^1.1.0",
+    "tee": "^0.2.0"
   }
 }
